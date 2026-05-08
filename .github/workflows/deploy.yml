@@ -120,8 +120,8 @@ jobs:
             echo "🚀 开始部署流程..."
 
             # 设置部署目录和备份目录
-            DEPLOY_DIR="/home/blog-admin/www" # 部署目录
-            BACKUP_DIR="/home/blog-admin/backups" # 备份目录
+            DEPLOY_DIR="/home/admin/www" # 部署目录
+            BACKUP_DIR="/home/admin/backups" # 备份目录
             TIMESTAMP=$(date +%Y%m%d_%H%M%S) # 生成时间戳
 
             # 创建必要的目录
