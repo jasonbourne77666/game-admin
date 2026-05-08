@@ -1,0 +1,147 @@
+# 定义工作流名称
+name: Deploy Blog Admin SPA
+
+# 触发条件配置
+on:
+  # 允许手动触发工作流
+  workflow_dispatch:
+    # 定义手动触发时的输入参数
+    inputs:
+      environment:
+        description: '部署环境' # 环境选择说明
+        required: true # 设置为必填
+        default: 'production' # 默认选择生产环境
+        type: choice # 类型为选择框
+        options: # 可选的环境选项
+          - production # 生产环境
+          - staging # 预发布环境
+          - development # 开发环境
+
+# 定义要执行的任务
+jobs:
+  # 构建和部署任务
+  build-and-deploy:
+    runs-on: ubuntu-latest # 使用最新版本的 Ubuntu 运行器
+    timeout-minutes: 30 # 设置任务超时时间为 30 分钟
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v3 # 使用官方的检出动作
+        timeout-minutes: 5 # 检出超时时间
+
+      # 设置 Node.js 环境
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18' # 使用 Node.js 18 版本
+
+      # 安装 pnpm
+      - name: Install pnpm
+        run: |
+          npm install -g pnpm@8
+          pnpm --version
+        shell: bash
+
+      # 获取 pnpm 存储目录
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          # 获取 pnpm 全局存储目录的路径，并将其保存到 GITHUB_ENV 环境变量中
+          # pnpm store path --silent 命令会返回 pnpm 的全局缓存目录
+          # >> $GITHUB_ENV 将输出追加到 GitHub Actions 的环境变量文件中
+          # 这样后续的步骤就可以通过 ${{ env.STORE_PATH }} 来访问这个路径
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      # 设置 pnpm 缓存
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }} # 缓存路径
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }} # 缓存键
+          restore-keys: | # 缓存恢复键
+            ${{ runner.os }}-pnpm-store-
+
+      # 安装项目依赖
+      - name: Install dependencies
+        run: pnpm install
+        timeout-minutes: 10 # 安装超时时间
+
+      # 构建项目
+      - name: Build project
+        run: pnpm build
+        timeout-minutes: 15 # 构建超时时间
+
+      # 检查 SSH 密钥
+      - name: Debug SSH Key
+        run: |
+          if [ -z "${{ secrets.ALIYUN_ECS_SSH_KEY }}" ]; then
+            echo "错误: SSH私钥为空"
+            exit 1
+          else
+            echo "SSH私钥已设置（长度检查）"
+            echo "私钥长度: $(echo '${{ secrets.ALIYUN_ECS_SSH_KEY }}' | wc -c) 字符"
+          fi
+        timeout-minutes: 2
+
+      # 打包构建产物
+      - name: Package dist
+        run: |
+          echo "📦 打包构建产物..."
+          tar -czf dist.tar.gz -C dist .
+        timeout-minutes: 5
+
+      # 上传到阿里云服务器
+      - name: Upload to Aliyun ECS
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.ALIYUN_ECS_HOST }} # 服务器地址
+          username: ${{ secrets.ALIYUN_ECS_USERNAME }} # 服务器用户名
+          key: ${{ secrets.ALIYUN_ECS_SSH_KEY }} # SSH 私钥
+          port: 22 # SSH 端口
+          source: 'dist.tar.gz' # 要上传的文件
+          target: '/tmp' # 目标目录
+          timeout: '10m' # 上传超时时间
+
+      # 部署到服务器
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.ALIYUN_ECS_HOST }}
+          username: ${{ secrets.ALIYUN_ECS_USERNAME }}
+          key: ${{ secrets.ALIYUN_ECS_SSH_KEY }}
+          port: 22
+          debug: true # 启用调试模式
+          command_timeout: '20m' # 命令执行超时时间
+          script: |
+            # 设置错误处理
+            set -e # 遇到错误立即退出
+            trap 'echo "❌ 部署失败: $?" >&2' ERR # 错误处理函数
+
+            echo "🚀 开始部署流程..."
+
+            # 设置部署目录和备份目录
+            DEPLOY_DIR="/home/blog-admin/www" # 部署目录
+            BACKUP_DIR="/home/blog-admin/backups" # 备份目录
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S) # 生成时间戳
+
+            # 创建必要的目录
+            mkdir -p $DEPLOY_DIR $BACKUP_DIR
+
+            # 备份当前版本（如果存在）
+            if [ -d "$DEPLOY_DIR" ] && [ "$(ls -A $DEPLOY_DIR)" ]; then
+              echo "📦 备份当前版本..."
+              tar -czf "$BACKUP_DIR/backup_$TIMESTAMP.tar.gz" -C $DEPLOY_DIR .
+            fi
+
+            # 解压新版本
+            echo "📦 解压新版本..."
+            rm -rf $DEPLOY_DIR/* # 清空部署目录
+            tar -xzf /tmp/dist.tar.gz -C $DEPLOY_DIR # 解压新版本
+            rm /tmp/dist.tar.gz # 清理临时文件
+
+            # 设置文件权限
+            echo "🔒 设置文件权限..."
+            chown -R $USER:$USER $DEPLOY_DIR # 设置所有者为当前用户
+            chmod -R 755 $DEPLOY_DIR # 设置权限
+
+            echo "✅ 部署完成!"
