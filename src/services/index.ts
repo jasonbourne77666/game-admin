@@ -20,3 +20,6 @@ export * from './permission';
 
 // 文件服务
 export * from './files';
+
+// App 发版
+export * from './app-releases';
